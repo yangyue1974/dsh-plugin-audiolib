@@ -22,7 +22,15 @@ export AUDIOLIB_API_KEY=alp_your_key
 
 密钥在 [audiolib.ai](https://audiolib.ai) 获取，免费额度每月 300 次。
 
-播放依赖外部播放器：macOS 用系统自带的 `afplay`，其它平台用 `ffplay`（`brew install ffmpeg` / `apt install ffmpeg`）。想用别的播放器就改 `playerCommand`。
+### 播放
+
+曲子是**流式播放**的：缓冲到第一批字节就出声，这也是 AudioLib 的 URL 本来的用法。这需要一个能直接吃 URL 的播放器——`mpv` 或 `ffplay`，装哪个都行：
+
+```sh
+brew install mpv        # 或：apt install mpv
+```
+
+都没有时，插件回落到 macOS 自带的 `afplay`。它只能读本地文件，于是插件会提前把整首下载下来——能用，但每首要花掉几 MB，中途换曲库时还会卡住等下载。建议装一个流式播放器。
 
 ## 配置
 
@@ -44,7 +52,7 @@ export AUDIOLIB_API_KEY=alp_your_key
 | `workingLibrary` | `audio.focus` | turn 打开期间播放的曲库；`''` 表示静音 |
 | `idleLibrary` | `''` | 所有 turn 关闭后播放的曲库；`''` 表示静音 |
 | `exposeTools` | `true` | 是否把 `music_play` / `music_stop` 给模型 |
-| `playerCommand` | `[]` | 播放器 argv，用 `{file}` 占位；留空按平台取默认值 |
+| `playerCommand` | `[]` | 播放器 argv；留空自动选。`{url}` 声明流式播放器，`{file}` 声明只读本地文件的 |
 | `requestTimeoutMs` | `15000` | AudioLib 请求超时 |
 
 已知曲库：`audio.focus`、`audio.ambient`、`audio.cinematic`、`audio.jazz`、`audio.sleep`、`audio.electronic`、`audio.default`。
@@ -64,7 +72,9 @@ export AUDIOLIB_API_KEY=alp_your_key
 | 模型控制 | `ctx.tools.register()`，原始 JSON Schema 定义 |
 | 卸载清理 | `ctx.effect()` — 插件卸载即杀掉播放器并删除全部临时文件 |
 
-每首曲子先下载到私有临时目录再播放，当前曲子播放期间预取下一首，所以接缝处没有空隙。AudioLib 调用很便宜，因状态变化而被丢弃的预取不值得优化。
+`playerCommand` 里的占位符决定播放模式。`{url}` 把 AudioLib 的 URL 直接交给播放器，边播边缓冲——不落盘，API 一返回就出声。`{file}` 表示播放器不能流式，插件才会先把曲子下载到私有临时目录，播完删除。
+
+两种模式都会提前取好下一首：插件加载时取一首，让第一个 turn 一开就有声；每首开始播时再取下一首，接缝处没有空隙。AudioLib 调用很便宜，因状态变化被丢弃的预取不值得优化。
 
 ## 开发
 

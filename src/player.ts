@@ -5,7 +5,7 @@
  * current one plays.
  */
 
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { createWriteStream } from 'node:fs'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -18,14 +18,43 @@ import { pipeline } from 'node:stream/promises'
 export const FILE_PLACEHOLDER = '{file}'
 
 /**
- * Player argv used when `playerCommand` is left empty.
+ * Argv token replaced with the remote track URL. Its presence is how a player
+ * declares that it streams: the plugin then skips downloading entirely and the
+ * player buffers as it plays.
+ */
+export const URL_PLACEHOLDER = '{url}'
+
+/** Streaming players, in preference order, with the argv each one needs. */
+const STREAMING_PLAYERS: readonly (readonly string[])[] = [
+  ['mpv', '--no-video', '--really-quiet', URL_PLACEHOLDER],
+  ['ffplay', '-nodisp', '-autoexit', '-loglevel', 'quiet', URL_PLACEHOLDER],
+]
+
+/** Whether `command` streams from the network instead of playing a local file. */
+export function isStreaming(command: readonly string[]): boolean {
+  return command.some(argument => argument.includes(URL_PLACEHOLDER))
+}
+
+/**
+ * Pick the player to use when `playerCommand` is left empty.
+ *
+ * A streaming player wins whenever one is installed, because streaming is what
+ * the audio URL is for: playback starts on the first buffered bytes instead of
+ * after several megabytes. `afplay` ships with macOS but only reads local
+ * files, so it is the fallback that keeps the plugin working with no install.
  *
  * @param platform - the running platform, as `process.platform` reports it.
- * @returns argv whose `{file}` token receives the downloaded track.
+ * @returns argv whose `{url}` or `{file}` token declares its playback mode.
  */
 export function defaultPlayerCommand(platform: NodeJS.Platform): string[] {
+  for (const candidate of STREAMING_PLAYERS) {
+    const [binary] = candidate
+    if (binary !== undefined && spawnSync('which', [binary], { stdio: 'ignore' }).status === 0) {
+      return [...candidate]
+    }
+  }
   if (platform === 'darwin') return ['afplay', FILE_PLACEHOLDER]
-  return ['ffplay', '-nodisp', '-autoexit', '-loglevel', 'quiet', FILE_PLACEHOLDER]
+  return ['ffplay', '-nodisp', '-autoexit', '-loglevel', 'quiet', URL_PLACEHOLDER]
 }
 
 /** A track on local disk. `dispose()` removes it and its temporary directory. */
@@ -60,18 +89,20 @@ export async function download(url: string, signal: AbortSignal): Promise<LocalT
 }
 
 /**
- * Play `file` to completion with an external player.
+ * Play one track to completion with an external player.
  *
  * Aborting `signal` terminates the player and resolves: a stopped track is a
  * normal outcome, not a failure.
  *
- * @param file - the downloaded track.
- * @param command - player argv containing {@link FILE_PLACEHOLDER}.
+ * @param source - the remote URL for a streaming player, or the downloaded file path.
+ * @param command - player argv containing {@link URL_PLACEHOLDER} or {@link FILE_PLACEHOLDER}.
  * @param signal - cancellation that stops playback.
  * @throws when the player binary is missing or exits non-zero on its own.
  */
-export async function play(file: string, command: readonly string[], signal: AbortSignal): Promise<void> {
-  const argv = command.map(argument => argument.replaceAll(FILE_PLACEHOLDER, file))
+export async function play(source: string, command: readonly string[], signal: AbortSignal): Promise<void> {
+  const argv = command.map(argument => argument
+    .replaceAll(URL_PLACEHOLDER, source)
+    .replaceAll(FILE_PLACEHOLDER, source))
   const [binary, ...rest] = argv
   if (binary === undefined) throw new Error('audiolib: `playerCommand` is empty')
   if (signal.aborted) return

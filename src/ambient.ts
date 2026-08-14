@@ -8,7 +8,7 @@
  */
 
 import { requestTrack, type Endpoint, type Track } from './audiolib.js'
-import { download, play, type LocalTrack } from './player.js'
+import { download, isStreaming, play, type LocalTrack } from './player.js'
 
 /** Whether any session currently holds an open turn. */
 export type Activity = 'working' | 'idle'
@@ -31,10 +31,13 @@ export interface AmbientOptions {
   readonly logger: AmbientLogger
 }
 
-/** A track already downloaded and ready to play. */
+/**
+ * A track ready to play: streamed straight from its URL, or downloaded first
+ * when the configured player only reads local files.
+ */
 interface Prepared {
   readonly track: Track
-  readonly local: LocalTrack
+  readonly local: LocalTrack | undefined
 }
 
 /** A prefetch in flight for one specific library. */
@@ -84,6 +87,15 @@ export class AmbientSoundtrack {
   }
 
   /**
+   * Download one track before anything asks for it, so the first turn opens on
+   * the downbeat. A track is several megabytes: fetching it only once a turn
+   * starts would spend that turn's first ten seconds in silence.
+   */
+  warmUp(): void {
+    this.#startPrefetch(this.#options.workingLibrary)
+  }
+
+  /**
    * Override the library chosen by activity. Playback starts immediately when
    * nothing is playing; otherwise the change lands at the next seam.
    *
@@ -93,6 +105,8 @@ export class AmbientSoundtrack {
   request(library: string): 'now' | 'next-track' {
     this.#override = library
     const playing = this.#loop !== undefined
+    // Fetch the newly chosen library now, so the seam does not stall on it.
+    this.#startPrefetch(library)
     this.#ensureRunning()
     return playing ? 'next-track' : 'now'
   }
@@ -149,14 +163,14 @@ export class AmbientSoundtrack {
       const signal = AbortSignal.any([this.#controller.signal, this.#track.signal])
       try {
         this.#options.logger.info('audiolib: %s — %s', library, prepared.track.title)
-        await play(prepared.local.file, this.#options.playerCommand, signal)
+        await play(prepared.local?.file ?? prepared.track.url, this.#options.playerCommand, signal)
       } catch (error) {
         this.#options.logger.warn('audiolib: playback stopped')
         this.#options.logger.warn(error)
         return
       } finally {
         this.#track = undefined
-        await prepared.local.dispose()
+        await prepared.local?.dispose()
       }
     }
   }
@@ -175,12 +189,16 @@ export class AmbientSoundtrack {
   }
 
   /**
-   * Fetch and download the next track while the current one plays. Calls are
+   * Fetch and download a track ahead of the seam that will play it. Calls are
    * cheap, so a prefetch discarded by a state change costs nothing worth saving.
+   *
+   * @param library - the library to prepare; defaults to what a seam would pick now.
    */
-  #startPrefetch(): void {
-    const library = this.#currentLibrary()
-    if (library === '') return
+  #startPrefetch(library: string = this.#currentLibrary()): void {
+    if (library === '' || this.#controller.signal.aborted) return
+    const existing = this.#prefetch
+    if (existing?.library === library) return
+    if (existing !== undefined) void disposeQuietly(existing.work)
     this.#prefetch = {
       library,
       work: this.#prepare(library).catch(() => undefined),
@@ -191,8 +209,10 @@ export class AmbientSoundtrack {
     const signal = this.#controller.signal
     const track = await requestTrack(this.#options.endpoint, library, signal)
     if (signal.aborted) return undefined
-    const local = await download(track.url, signal)
-    return { track, local }
+    // A streaming player takes the URL and buffers as it plays; only a
+    // file-only player makes the plugin pay for the whole track up front.
+    if (isStreaming(this.#options.playerCommand)) return { track, local: undefined }
+    return { track, local: await download(track.url, signal) }
   }
 
   async #discardPrefetch(): Promise<void> {
@@ -209,5 +229,5 @@ export class AmbientSoundtrack {
  */
 async function disposeQuietly(work: Promise<Prepared | undefined>): Promise<void> {
   const prepared = await work.catch(() => undefined)
-  await prepared?.local.dispose().catch(() => undefined)
+  await prepared?.local?.dispose().catch(() => undefined)
 }

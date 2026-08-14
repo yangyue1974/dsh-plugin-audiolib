@@ -22,7 +22,15 @@ export AUDIOLIB_API_KEY=alp_your_key
 
 Get a key at [audiolib.ai](https://audiolib.ai) — the free tier is 300 requests/month.
 
-Playback uses an external player: `afplay` on macOS (built in), `ffplay` elsewhere (`brew install ffmpeg` / `apt install ffmpeg`). Any other player works through `playerCommand`.
+### Playback
+
+Tracks stream: playback starts on the first buffered bytes, the way the AudioLib URL is meant to be consumed. That needs a player that reads a URL — `mpv` or `ffplay`, whichever is on `PATH`:
+
+```sh
+brew install mpv        # or: apt install mpv
+```
+
+Without one, the plugin falls back to macOS's built-in `afplay`, which only reads local files. It then downloads each track ahead of the moment it is needed — a working fallback, but it spends several megabytes per track and stalls when switching libraries mid-session. Install a streaming player.
 
 ## Configure
 
@@ -44,7 +52,7 @@ Override the row in your profile's `cordis.patch.yml`:
 | `workingLibrary` | `audio.focus` | Plays while a turn is open; `''` for silence |
 | `idleLibrary` | `''` | Plays once every turn has closed; `''` for silence |
 | `exposeTools` | `true` | Give the model `music_play` / `music_stop` |
-| `playerCommand` | `[]` | Player argv with a `{file}` token; empty picks the platform default |
+| `playerCommand` | `[]` | Player argv; empty auto-selects. `{url}` declares a streaming player, `{file}` a file-only one |
 | `requestTimeoutMs` | `15000` | AudioLib request deadline |
 
 Known libraries include `audio.focus`, `audio.ambient`, `audio.cinematic`, `audio.jazz`, `audio.sleep`, `audio.electronic`, `audio.default`.
@@ -64,7 +72,9 @@ Both are ordinary registrations on `ctx.tools`, so they are available in Code Mo
 | Model control | `ctx.tools.register()` with raw JSON-Schema definitions |
 | Teardown | `ctx.effect()` — unloading the plugin kills the player and removes every temporary file |
 
-Each track is downloaded to a private temporary directory before playing, and the next one is fetched while the current plays, so the seam has no gap. AudioLib calls are cheap, so a prefetch discarded by a state change costs nothing worth optimizing.
+The placeholder in `playerCommand` decides the playback mode. `{url}` hands the AudioLib URL straight to the player, which buffers as it plays — nothing is written to disk and a track begins as soon as its API call returns. `{file}` means the player cannot stream, so the plugin downloads each track to a private temporary directory first and removes it afterwards.
+
+Either way the plugin fetches one track ahead: at load, so the first turn opens on the downbeat, and again when a track starts, so the seam has no gap. AudioLib calls are cheap, so a prefetch discarded by a state change costs nothing worth optimizing.
 
 ## Develop
 

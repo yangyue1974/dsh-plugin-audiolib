@@ -55,7 +55,11 @@ export const Config: Schema<Config> = Schema.object({
 export function apply(ctx: Context, config: Config): void {
   const apiKey = config.apiKey || process.env['AUDIOLIB_API_KEY'] || ''
   if (apiKey === '') {
-    throw new Error('audiolib: set `apiKey` in cordis.yml or AUDIOLIB_API_KEY in the environment')
+    // Stay inert rather than throw: a loader entry that fails to apply takes the
+    // whole plugin tree down with it, and an optional soundtrack must never cost
+    // someone their harness. The warning is the loud part.
+    ctx.logger.warn('audiolib: no API key — soundtrack disabled; set `apiKey` in cordis.yml or AUDIOLIB_API_KEY in the environment')
+    return
   }
 
   const soundtrack = new AmbientSoundtrack({
@@ -68,6 +72,7 @@ export function apply(ctx: Context, config: Config): void {
   ctx.effect(() => () => void soundtrack.dispose())
 
   if (config.ambient) {
+    soundtrack.warmUp()
     ctx.on('session/event', (session, event) => {
       if (event.type === 'turn/start') soundtrack.turnOpened(session.id)
       else if (event.type === 'turn/end') soundtrack.turnClosed(session.id)
