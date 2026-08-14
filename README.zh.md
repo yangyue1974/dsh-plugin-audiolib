@@ -2,6 +2,10 @@
 
 [English](README.md) | 中文
 
+[![npm](https://img.shields.io/npm/v/dsh-plugin-audiolib.svg)](https://www.npmjs.com/package/dsh-plugin-audiolib)
+[![license](https://img.shields.io/npm/l/dsh-plugin-audiolib.svg)](LICENSE)
+
+
 给 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 的环境音轨插件：音乐由 agent 自己的状态驱动，曲库来自 [AudioLib.ai](https://audiolib.ai)——10 万首以上全版权清理的原创曲目，一次 API 调用换一首完整曲子。
 
 agent 需要的状态信号本来就在会话事件流里：一个 turn 打开，说明它在干活；所有 turn 关闭，房间安静下来。这个插件把那条事件流变成声音。

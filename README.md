@@ -2,6 +2,10 @@
 
 English | [中文](README.zh.md)
 
+[![npm](https://img.shields.io/npm/v/dsh-plugin-audiolib.svg)](https://www.npmjs.com/package/dsh-plugin-audiolib)
+[![license](https://img.shields.io/npm/l/dsh-plugin-audiolib.svg)](LICENSE)
+
+
 An ambient soundtrack for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness), driven by the agent's own state. Music comes from [AudioLib.ai](https://audiolib.ai) — 100,000+ fully-cleared tracks, one API call per track.
 
 The agent already publishes everything needed as session events: a turn opens, work is happening; every turn closes, the room goes quiet. This plugin turns that stream into sound.
