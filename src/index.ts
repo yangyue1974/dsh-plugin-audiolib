@@ -8,17 +8,31 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import Schema from '@deepseek-ai/schemastery'
+// The root module carries the `ctx.credentials` declaration merge; `/types` carries the ref brand.
+import type {} from '@deepseek-ai/dsh-credentials'
+import type { CredentialRef } from '@deepseek-ai/dsh-credentials/types'
 import type { ToolDefinition } from '@deepseek-ai/dsh-tools'
 import { AmbientSoundtrack } from './ambient.js'
+import { LIBRARIES } from './libraries.js'
 import { defaultPlayerCommand } from './player.js'
 
 export const name = 'audiolib'
+
+/**
+ * Only `tools` is declared: Cordis `inject` has no optional tier, and requiring
+ * `credentials` would keep the plugin from activating in a composition that
+ * mounts no provider. The key is read through an optional access instead, so
+ * such a composition falls back to the process environment.
+ */
 export const inject = ['tools']
 
 /** Plugin configuration; every deployment-varying value lives here. */
 export interface Config {
-  /** AudioLib API key; falls back to `AUDIOLIB_API_KEY` in the environment. */
-  apiKey: string
+  /**
+   * Name of the credential holding the AudioLib key — a reference, never the
+   * key itself, so this config stays safe to sync and to render in a UI.
+   */
+  apiKeyRef: string
   /** Audio endpoint URL. */
   baseUrl: string
   /** Whether session events drive the soundtrack. */
@@ -36,7 +50,7 @@ export interface Config {
 }
 
 export const Config: Schema<Config> = Schema.object({
-  apiKey: Schema.string().default(''),
+  apiKeyRef: Schema.string().default('AUDIOLIB_API_KEY'),
   baseUrl: Schema.string().default('https://api.audiolib.ai/v1/audio'),
   ambient: Schema.boolean().default(true),
   workingLibrary: Schema.string().default('audio.focus'),
@@ -53,23 +67,43 @@ export const Config: Schema<Config> = Schema.object({
  * @param config - validated plugin configuration.
  */
 export function apply(ctx: Context, config: Config): void {
-  const apiKey = config.apiKey || process.env['AUDIOLIB_API_KEY'] || ''
-  if (apiKey === '') {
-    // Stay inert rather than throw: a loader entry that fails to apply takes the
-    // whole plugin tree down with it, and an optional soundtrack must never cost
-    // someone their harness. The warning is the loud part.
-    ctx.logger.warn('audiolib: no API key — soundtrack disabled; set `apiKey` in cordis.yml or AUDIOLIB_API_KEY in the environment')
-    return
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(config.apiKeyRef)) {
+    throw new Error(`audiolib: \`apiKeyRef\` must be a shell-style identifier, got "${config.apiKeyRef}"`)
+  }
+  const ref = config.apiKeyRef as CredentialRef
+
+  /**
+   * Resolve the key for one call. The credentials provider layers the process
+   * environment over its managed store, so a plain `AUDIOLIB_API_KEY=…` still
+   * works and a key pasted into the store takes effect on the next track.
+   */
+  const resolveKey = async (): Promise<string> => {
+    const stored = await ctx.credentials?.resolve(ref)
+    const key = stored?.value ?? process.env[config.apiKeyRef] ?? ''
+    if (key === '') {
+      throw new Error(`audiolib: no key behind "${config.apiKeyRef}" — add it to ~/.dsh/.credentials.yaml or the environment`)
+    }
+    return key
   }
 
   const soundtrack = new AmbientSoundtrack({
-    endpoint: { apiKey, baseUrl: config.baseUrl, timeoutMs: config.requestTimeoutMs },
+    endpoint: { baseUrl: config.baseUrl, timeoutMs: config.requestTimeoutMs },
+    resolveKey,
     playerCommand: config.playerCommand.length > 0 ? config.playerCommand : defaultPlayerCommand(process.platform),
     workingLibrary: config.workingLibrary,
     idleLibrary: config.idleLibrary,
     logger: ctx.logger,
   })
   ctx.effect(() => () => void soundtrack.dispose())
+
+  // One loud line at load when nothing is configured yet, instead of a silent
+  // soundtrack whose cause only shows up in a per-track warning.
+  void (async () => {
+    const configured = (await ctx.credentials?.describe(ref))?.configured ?? process.env[config.apiKeyRef] !== undefined
+    if (!configured) {
+      ctx.logger.warn('audiolib: no key behind "%s" — the soundtrack stays silent until one is configured', config.apiKeyRef)
+    }
+  })().catch(() => undefined)
 
   if (config.ambient) {
     soundtrack.warmUp()
@@ -82,6 +116,7 @@ export function apply(ctx: Context, config: Config): void {
   if (config.exposeTools) {
     ctx.tools.register(playTool(soundtrack))
     ctx.tools.register(stopTool(soundtrack))
+    ctx.tools.register(statusTool(soundtrack))
   }
 }
 
@@ -114,7 +149,7 @@ function playTool(soundtrack: AmbientSoundtrack): ToolDefinition {
     name: 'music_play',
     description: [
       'Choose the background music playing for the user, from the AudioLib catalog.',
-      'Libraries are ids such as "audio.focus", "audio.ambient", "audio.cinematic", "audio.jazz", "audio.sleep".',
+      `Libraries: ${LIBRARIES.join(', ')}.`,
       'The change lands when the current track ends — a playing track is never cut off.',
       'Use it to match the mood of the work; call music_stop for silence.',
     ].join(' '),
@@ -173,6 +208,69 @@ function stopTool(soundtrack: AmbientSoundtrack): ToolDefinition {
     async execute() {
       await soundtrack.stop()
       return 'Music stopped.'
+    },
+  }
+}
+
+/**
+ * Build the tool that reports what is playing and what the AudioLib account has
+ * left. Every audio call returns a quota snapshot, so the account's own numbers
+ * are already in hand — the model can answer "how much do I have left" without
+ * spending a call.
+ *
+ * @param soundtrack - the mounted soundtrack.
+ * @returns the tool definition to register.
+ */
+function statusTool(soundtrack: AmbientSoundtrack): ToolDefinition {
+  return {
+    name: 'music_status',
+    description: 'Report the track playing now and the AudioLib plan, remaining calls, and rate limit. Costs no API call.',
+    parameters: { type: 'object', properties: {}, additionalProperties: false },
+    output: {
+      schema: {
+        type: 'object',
+        properties: {
+          library: { type: 'string' },
+          title: { type: 'string' },
+          plan: { type: 'string' },
+          remaining: { type: 'number' },
+          total: { type: 'number' },
+          used: { type: 'number' },
+          unlimited: { type: 'boolean' },
+          ratePerMinute: { type: 'number' },
+          periodEndUnix: { type: 'number' },
+        },
+        required: ['library', 'title', 'plan', 'remaining', 'total', 'used', 'unlimited', 'ratePerMinute', 'periodEndUnix'],
+        additionalProperties: false,
+      },
+      render: (_args, value) => {
+        const status = value as {
+          library: string; title: string; plan: string
+          remaining: number; total: number; unlimited: boolean
+        }
+        const playing = status.library === '' ? 'Nothing playing.' : `Playing ${status.title} (${status.library}).`
+        const quota = status.plan === ''
+          ? 'No AudioLib call has been made yet, so no quota is known.'
+          : status.unlimited
+            ? `Plan ${status.plan}, unlimited calls.`
+            : `Plan ${status.plan}, ${status.remaining} of ${status.total} calls left this period.`
+        return [{ type: 'text', text: `${playing} ${quota}` }]
+      },
+    },
+    presentCall: () => ({ card: 'generic', title: '♪ status' }),
+    async execute() {
+      const { library, title, quota } = soundtrack.status()
+      return {
+        library,
+        title,
+        plan: quota?.planName ?? '',
+        remaining: quota?.remaining ?? 0,
+        total: quota?.total ?? 0,
+        used: quota?.used ?? 0,
+        unlimited: quota?.unlimited ?? false,
+        ratePerMinute: quota?.ratePerMinute ?? 0,
+        periodEndUnix: quota?.periodEnd ?? 0,
+      }
     },
   }
 }

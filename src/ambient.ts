@@ -7,7 +7,7 @@
  * feedback; the seam is the only moment where switching carries information.
  */
 
-import { requestTrack, type Endpoint, type Track } from './audiolib.js'
+import { requestTrack, type Endpoint, type Quota, type Track } from './audiolib.js'
 import { download, isStreaming, play, type LocalTrack } from './player.js'
 
 /** Whether any session currently holds an open turn. */
@@ -19,9 +19,24 @@ export interface AmbientLogger {
   warn(message: unknown, ...args: unknown[]): void
 }
 
+/** What the soundtrack is doing right now, plus the account state behind it. */
+export interface AmbientStatus {
+  /** Library of the playing track; empty when silent. */
+  readonly library: string
+  /** Title of the playing track; empty when silent. */
+  readonly title: string
+  /** Quota reported by the most recent API call; absent before the first one. */
+  readonly quota: Quota | undefined
+}
+
 /** Everything the soundtrack needs to run. */
 export interface AmbientOptions {
   readonly endpoint: Endpoint
+  /**
+   * Resolve the API key for one call. Credentials are read per operation, never
+   * cached, so rotating the key reaches the very next track without a restart.
+   */
+  resolveKey(): Promise<string>
   /** Player argv, already resolved to a platform default when unset. */
   readonly playerCommand: readonly string[]
   /** Library played while a turn is open; empty means silence while working. */
@@ -58,6 +73,9 @@ export class AmbientSoundtrack {
   #override: string | undefined
   #loop: Promise<void> | undefined
   #prefetch: Prefetch | undefined
+  /** Newest quota snapshot, refreshed by every successful API call. */
+  #quota: Quota | undefined
+  #playing: { library: string; title: string } | undefined
   /** Aborts only the current track, leaving the loop free to pick the next one. */
   #track: AbortController | undefined
 
@@ -84,6 +102,19 @@ export class AmbientSoundtrack {
   turnClosed(session: string): void {
     this.#openTurns.delete(session)
     this.#ensureRunning()
+  }
+
+  /**
+   * What is playing and what the account has left.
+   *
+   * @returns the current track and the newest quota snapshot.
+   */
+  status(): AmbientStatus {
+    return {
+      library: this.#playing?.library ?? '',
+      title: this.#playing?.title ?? '',
+      quota: this.#quota,
+    }
   }
 
   /**
@@ -161,8 +192,10 @@ export class AmbientSoundtrack {
       this.#startPrefetch()
       this.#track = new AbortController()
       const signal = AbortSignal.any([this.#controller.signal, this.#track.signal])
+      this.#playing = { library, title: prepared.track.title }
       try {
-        this.#options.logger.info('audiolib: %s — %s', library, prepared.track.title)
+        this.#options.logger.info('audiolib: %s — %s (quota left: %s)', library, prepared.track.title,
+          this.#quota === undefined ? '?' : this.#quota.unlimited ? 'unlimited' : String(this.#quota.remaining))
         await play(prepared.local?.file ?? prepared.track.url, this.#options.playerCommand, signal)
       } catch (error) {
         this.#options.logger.warn('audiolib: playback stopped')
@@ -170,6 +203,7 @@ export class AmbientSoundtrack {
         return
       } finally {
         this.#track = undefined
+        this.#playing = undefined
         await prepared.local?.dispose()
       }
     }
@@ -207,7 +241,9 @@ export class AmbientSoundtrack {
 
   async #prepare(library: string): Promise<Prepared | undefined> {
     const signal = this.#controller.signal
-    const track = await requestTrack(this.#options.endpoint, library, signal)
+    const apiKey = await this.#options.resolveKey()
+    const track = await requestTrack(this.#options.endpoint, apiKey, library, signal)
+    if (track.quota !== undefined) this.#quota = track.quota
     if (signal.aborted) return undefined
     // A streaming player takes the URL and buffers as it plays; only a
     // file-only player makes the plugin pay for the whole track up front.
