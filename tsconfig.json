@@ -14,5 +14,7 @@
     "rootDir": "src",
     "skipLibCheck": true
   },
-  "include": ["src"]
+  "include": ["src"],
+  "//": "The browser half is bundled by tsdown and type-checked by tsconfig.client.json; tsc emits the Node half only.",
+  "exclude": ["src/client"]
 }

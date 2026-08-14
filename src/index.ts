@@ -11,12 +11,20 @@ import Schema from '@deepseek-ai/schemastery'
 // The root module carries the `ctx.credentials` declaration merge; `/types` carries the ref brand.
 import type {} from '@deepseek-ai/dsh-credentials'
 import type { CredentialRef } from '@deepseek-ai/dsh-credentials/types'
+// Carries the `ctx.settings` declaration merge and the namespace brand.
+import type { SettingsNamespace } from '@deepseek-ai/dsh-settings'
 import type { ToolDefinition } from '@deepseek-ai/dsh-tools'
 import { AmbientSoundtrack } from './ambient.js'
 import { LIBRARIES } from './libraries.js'
 import { defaultPlayerCommand } from './player.js'
 
 export const name = 'audiolib'
+
+/**
+ * Settings namespace the browser card binds. Spelled here and again in the
+ * client half: a browser bundle must not import a host package.
+ */
+export const SETTINGS_NAMESPACE = 'audiolib' as SettingsNamespace
 
 /**
  * Only `tools` is declared: Cordis `inject` has no optional tier, and requiring
@@ -70,7 +78,21 @@ export function apply(ctx: Context, config: Config): void {
   if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(config.apiKeyRef)) {
     throw new Error(`audiolib: \`apiKeyRef\` must be a shell-style identifier, got "${config.apiKeyRef}"`)
   }
-  const ref = config.apiKeyRef as CredentialRef
+  /**
+   * The authoritative configuration. It starts as the composition entry and
+   * points at the settings section while one is registered, so a change made
+   * in the browser card reaches the next seam without a restart. Falling back
+   * on detach keeps the plugin working exactly as composed.
+   */
+  let current = (): Config => config
+  ctx.inject(['settings'], sctx => {
+    const scope = sctx.settings.register(SETTINGS_NAMESPACE, Config, { base: config })
+    current = () => scope.get()
+    sctx.effect(() => () => { current = () => config }, 'audiolib: settings detach')
+  })
+
+  /** The credential reference in force right now. */
+  const keyRef = (): CredentialRef => current().apiKeyRef as CredentialRef
 
   /**
    * Read the credentials service without requiring it: a plain `ctx.credentials`
@@ -89,10 +111,11 @@ export function apply(ctx: Context, config: Config): void {
    * works and a key pasted into the store takes effect on the next track.
    */
   const resolveKey = async (): Promise<string> => {
+    const ref = keyRef()
     const stored = await credentials()?.resolve(ref)
-    const key = stored?.value ?? process.env[config.apiKeyRef] ?? ''
+    const key = stored?.value ?? process.env[ref] ?? ''
     if (key === '') {
-      throw new Error(`audiolib: no key behind "${config.apiKeyRef}" — add it to ~/.dsh/.credentials.yaml or the environment`)
+      throw new Error(`audiolib: no key behind "${ref}" — paste one into Settings → Plugins → AudioLib`)
     }
     return key
   }
@@ -101,8 +124,7 @@ export function apply(ctx: Context, config: Config): void {
     endpoint: { baseUrl: config.baseUrl, timeoutMs: config.requestTimeoutMs },
     resolveKey,
     playerCommand: config.playerCommand.length > 0 ? config.playerCommand : defaultPlayerCommand(process.platform),
-    workingLibrary: config.workingLibrary,
-    idleLibrary: config.idleLibrary,
+    libraries: () => ({ working: current().workingLibrary, idle: current().idleLibrary }),
     logger: ctx.logger,
   })
   ctx.effect(() => () => void soundtrack.dispose())
@@ -110,9 +132,10 @@ export function apply(ctx: Context, config: Config): void {
   // One loud line at load when nothing is configured yet, instead of a silent
   // soundtrack whose cause only shows up in a per-track warning.
   void (async () => {
-    const configured = (await credentials()?.describe(ref))?.configured ?? process.env[config.apiKeyRef] !== undefined
+    const ref = keyRef()
+    const configured = (await credentials()?.describe(ref))?.configured ?? process.env[ref] !== undefined
     if (!configured) {
-      ctx.logger.warn('audiolib: no key behind "%s" — the soundtrack stays silent until one is configured', config.apiKeyRef)
+      ctx.logger.warn('audiolib: no key behind "%s" — the soundtrack stays silent until one is configured', ref)
     }
   })().catch(() => undefined)
 

@@ -14,13 +14,17 @@ The agent already publishes everything needed as session events: a turn opens, w
 dsh plugin --profile web add dsh-plugin-audiolib
 ```
 
-Then put your AudioLib key in the environment (or in `apiKey`, below) and restart:
+After restarting, open **Settings → Plugins → Plugin configuration** and paste your key into the **AudioLib soundtrack** card. It goes to the DSH credential store (`~/.dsh/.credentials.yaml`, mode 600), never into a config file, and takes effect on the next track without a restart.
+
+Get a key at [audiolib.ai](https://audiolib.ai) — the free tier is 300 requests/month.
+
+The environment works too, if you prefer it:
 
 ```sh
 export AUDIOLIB_API_KEY=alp_your_key
 ```
 
-Get a key at [audiolib.ai](https://audiolib.ai) — the free tier is 300 requests/month.
+The card's library pickers are read-only for now: DSH serves only built-in plugins' settings sections to the browser (an allowlist in `dsh-host-apiproxy`, which its own comment marks as deferred work). Set the libraries in your profile's `cordis.patch.yml` until that lifts. The key control is unaffected — credentials are not namespace-gated.
 
 ### Playback
 

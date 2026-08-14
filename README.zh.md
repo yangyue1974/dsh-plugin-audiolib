@@ -14,13 +14,15 @@ agent 需要的状态信号本来就在会话事件流里：一个 turn 打开�
 dsh plugin --profile web add dsh-plugin-audiolib
 ```
 
-然后把 AudioLib 密钥放进环境变量（或写进下面的 `apiKey`），重启：
+重启后打开 **设置 → 插件 → 插件配置**，在 **AudioLib 环境音轨** 卡片里粘贴密钥，保存即可——密钥存进 DSH 的凭据库（`~/.dsh/.credentials.yaml`，权限 600），不进任何配置文件，也不用重启。
+
+密钥在 [audiolib.ai](https://audiolib.ai) 获取，免费额度每月 300 次。
+
+不想用界面的话，环境变量同样有效：
 
 ```sh
 export AUDIOLIB_API_KEY=alp_your_key
 ```
-
-密钥在 [audiolib.ai](https://audiolib.ai) 获取，免费额度每月 300 次。
 
 ### 播放
 

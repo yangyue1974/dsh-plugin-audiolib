@@ -39,10 +39,15 @@ export interface AmbientOptions {
   resolveKey(): Promise<string>
   /** Player argv, already resolved to a platform default when unset. */
   readonly playerCommand: readonly string[]
-  /** Library played while a turn is open; empty means silence while working. */
-  readonly workingLibrary: string
-  /** Library played once every turn has closed; empty means silence when idle. */
-  readonly idleLibrary: string
+  /**
+   * The libraries in force right now. A thunk, not two strings: settings can
+   * change under a running soundtrack, and the next seam must read the choice
+   * that stands then rather than the one composed at load.
+   *
+   * @returns `working` plays while a turn is open, `idle` once every turn has
+   * closed; either empty means silence in that state.
+   */
+  libraries(): { working: string; idle: string }
   readonly logger: AmbientLogger
 }
 
@@ -123,7 +128,7 @@ export class AmbientSoundtrack {
    * starts would spend that turn's first ten seconds in silence.
    */
   warmUp(): void {
-    this.#startPrefetch(this.#options.workingLibrary)
+    this.#startPrefetch(this.#options.libraries().working)
   }
 
   /**
@@ -165,7 +170,8 @@ export class AmbientSoundtrack {
   /** The library that a seam reached right now would play; empty means silence. */
   #currentLibrary(): string {
     if (this.#override !== undefined) return this.#override
-    return this.#openTurns.size > 0 ? this.#options.workingLibrary : this.#options.idleLibrary
+    const { working, idle } = this.#options.libraries()
+    return this.#openTurns.size > 0 ? working : idle
   }
 
   #ensureRunning(): void {
