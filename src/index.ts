@@ -17,6 +17,7 @@ import type { ToolDefinition } from '@deepseek-ai/dsh-tools'
 import { AmbientSoundtrack } from './ambient.js'
 import { requestTrack } from './audiolib.js'
 import { systemClock } from './clock.js'
+import type { Health } from './health.js'
 import { LIBRARIES } from './libraries.js'
 import { createPlayback, defaultPlayerCommand } from './player.js'
 
@@ -256,6 +257,38 @@ function stopTool(soundtrack: AmbientSoundtrack): ToolDefinition {
   }
 }
 
+/** The `music_status` projection of a {@link Health}. */
+export interface DescribedHealth {
+  /** `ok`, `retrying`, or `paused:<reason>` — one token the model can branch on. */
+  readonly health: string
+  /** What went wrong and, for a dated pause, when it lifts; empty when nothing did. */
+  readonly healthReason: string
+}
+
+/**
+ * Flatten health into the two strings the tool reports.
+ *
+ * The card cannot show any of this — third-party settings namespaces are still
+ * off the `dsh-host-apiproxy` allowlist — so the tool is the only place a user
+ * can ask why the room is quiet and get an answer.
+ *
+ * @param health - the soundtrack's current health.
+ * @returns the two reported fields.
+ */
+export function describeHealth(health: Health): DescribedHealth {
+  if (health.kind === 'ok') return { health: 'ok', healthReason: '' }
+  if (health.kind === 'retrying') {
+    return {
+      health: 'retrying',
+      healthReason: `${health.message} (attempt ${health.attempts})`,
+    }
+  }
+  const lifts = health.untilUnix === 0
+    ? ''
+    : ` Retries after ${new Date(health.untilUnix * 1_000).toISOString()}.`
+  return { health: `paused:${health.reason}`, healthReason: `${health.message}.${lifts}` }
+}
+
 /**
  * Build the tool that reports what is playing and what the AudioLib account has
  * left. Every audio call returns a quota snapshot, so the account's own numbers
@@ -268,7 +301,7 @@ function stopTool(soundtrack: AmbientSoundtrack): ToolDefinition {
 function statusTool(soundtrack: AmbientSoundtrack): ToolDefinition {
   return {
     name: 'music_status',
-    description: 'Report the track playing now and the AudioLib plan, remaining calls, and rate limit. Costs no API call.',
+    description: 'Report the track playing now, the AudioLib plan, remaining calls, and rate limit, and why the soundtrack is silent when it is. Costs no API call.',
     parameters: { type: 'object', properties: {}, additionalProperties: false },
     output: {
       schema: {
@@ -283,14 +316,17 @@ function statusTool(soundtrack: AmbientSoundtrack): ToolDefinition {
           unlimited: { type: 'boolean' },
           ratePerMinute: { type: 'number' },
           periodEndUnix: { type: 'number' },
+          health: { type: 'string' },
+          healthReason: { type: 'string' },
         },
-        required: ['library', 'title', 'plan', 'remaining', 'total', 'used', 'unlimited', 'ratePerMinute', 'periodEndUnix'],
+        required: ['library', 'title', 'plan', 'remaining', 'total', 'used', 'unlimited', 'ratePerMinute', 'periodEndUnix', 'health', 'healthReason'],
         additionalProperties: false,
       },
       render: (_args, value) => {
         const status = value as {
           library: string; title: string; plan: string
           remaining: number; total: number; unlimited: boolean
+          health: string; healthReason: string
         }
         const playing = status.library === '' ? 'Nothing playing.' : `Playing ${status.title} (${status.library}).`
         const quota = status.plan === ''
@@ -298,12 +334,13 @@ function statusTool(soundtrack: AmbientSoundtrack): ToolDefinition {
           : status.unlimited
             ? `Plan ${status.plan}, unlimited calls.`
             : `Plan ${status.plan}, ${status.remaining} of ${status.total} calls left this period.`
-        return [{ type: 'text', text: `${playing} ${quota}` }]
+        const health = status.health === 'ok' ? '' : ` Soundtrack ${status.health}: ${status.healthReason}`
+        return [{ type: 'text', text: `${playing} ${quota}${health}` }]
       },
     },
     presentCall: () => ({ card: 'generic', title: '♪ status' }),
     async execute() {
-      const { library, title, quota } = soundtrack.status()
+      const { library, title, quota, health } = soundtrack.status()
       return {
         library,
         title,
@@ -314,6 +351,7 @@ function statusTool(soundtrack: AmbientSoundtrack): ToolDefinition {
         unlimited: quota?.unlimited ?? false,
         ratePerMinute: quota?.ratePerMinute ?? 0,
         periodEndUnix: quota?.periodEnd ?? 0,
+        ...describeHealth(health),
       }
     },
   }
