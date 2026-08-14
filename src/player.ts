@@ -1,8 +1,9 @@
 /**
- * Local playback: download a track to a temporary file, then hand that file to
- * an external player process. Downloading first keeps playback independent of
- * the player's network support and lets the next track be fetched while the
- * current one plays.
+ * Local playback: detect an installed player, decide between streaming a URL
+ * and downloading to a temporary file, and run the external player process
+ * either way. The stream-or-download decision is made once, in
+ * {@link createPlayback}, so the rest of the plugin never has to know which
+ * mode it is in.
  */
 
 import { spawn, spawnSync } from 'node:child_process'
@@ -13,6 +14,8 @@ import { extname, join } from 'node:path'
 import { Readable } from 'node:stream'
 import type { ReadableStream } from 'node:stream/web'
 import { pipeline } from 'node:stream/promises'
+import type { Track } from './audiolib.js'
+import type { Playback, PreparedTrack } from './ports.js'
 
 /** Argv token replaced with the downloaded track path before spawning the player. */
 export const FILE_PLACEHOLDER = '{file}'
@@ -35,6 +38,34 @@ export function isStreaming(command: readonly string[]): boolean {
   return command.some(argument => argument.includes(URL_PLACEHOLDER))
 }
 
+/** Whether a binary is on PATH. Injected so detection can be tested. */
+export type Probe = (binary: string) => boolean
+
+/**
+ * The command that answers whether a binary is on PATH.
+ *
+ * @param platform - the running platform, as `process.platform` reports it.
+ * @returns `where` on Windows, `which` everywhere else.
+ */
+export function pathLocator(platform: NodeJS.Platform): 'where' | 'which' {
+  return platform === 'win32' ? 'where' : 'which'
+}
+
+/**
+ * The platform's way of asking whether a binary is on PATH.
+ *
+ * Windows has no `which`; `where` is its equivalent, and probing with the
+ * wrong one finds nothing while looking exactly like "not installed" — which
+ * is how every Windows user silently lost streaming playback.
+ *
+ * @param platform - the running platform, as `process.platform` reports it.
+ * @returns a probe bound to that platform's locator.
+ */
+export function probeOnPath(platform: NodeJS.Platform): Probe {
+  const locator = pathLocator(platform)
+  return binary => spawnSync(locator, [binary], { stdio: 'ignore' }).status === 0
+}
+
 /**
  * Pick the player to use when `playerCommand` is left empty.
  *
@@ -44,14 +75,13 @@ export function isStreaming(command: readonly string[]): boolean {
  * files, so it is the fallback that keeps the plugin working with no install.
  *
  * @param platform - the running platform, as `process.platform` reports it.
+ * @param probe - how to test for a binary; defaults to the platform's locator.
  * @returns argv whose `{url}` or `{file}` token declares its playback mode.
  */
-export function defaultPlayerCommand(platform: NodeJS.Platform): string[] {
+export function defaultPlayerCommand(platform: NodeJS.Platform, probe: Probe = probeOnPath(platform)): string[] {
   for (const candidate of STREAMING_PLAYERS) {
     const [binary] = candidate
-    if (binary !== undefined && spawnSync('which', [binary], { stdio: 'ignore' }).status === 0) {
-      return [...candidate]
-    }
+    if (binary !== undefined && probe(binary)) return [...candidate]
   }
   if (platform === 'darwin') return ['afplay', FILE_PLACEHOLDER]
   return ['ffplay', '-nodisp', '-autoexit', '-loglevel', 'quiet', URL_PLACEHOLDER]
@@ -89,6 +119,23 @@ export async function download(url: string, signal: AbortSignal): Promise<LocalT
 }
 
 /**
+ * Substitute the source into a player's argv.
+ *
+ * Both placeholders are replaced with the same value: which one a command
+ * carries decides whether that value is a URL or a path, and by the time argv
+ * is built the decision is already made.
+ *
+ * @param command - player argv containing {@link URL_PLACEHOLDER} or {@link FILE_PLACEHOLDER}.
+ * @param source - the URL or file path to play.
+ * @returns the argv to spawn.
+ */
+export function playerArgv(command: readonly string[], source: string): string[] {
+  return command.map(argument => argument
+    .replaceAll(URL_PLACEHOLDER, source)
+    .replaceAll(FILE_PLACEHOLDER, source))
+}
+
+/**
  * Play one track to completion with an external player.
  *
  * Aborting `signal` terminates the player and resolves: a stopped track is a
@@ -100,9 +147,7 @@ export async function download(url: string, signal: AbortSignal): Promise<LocalT
  * @throws when the player binary is missing or exits non-zero on its own.
  */
 export async function play(source: string, command: readonly string[], signal: AbortSignal): Promise<void> {
-  const argv = command.map(argument => argument
-    .replaceAll(URL_PLACEHOLDER, source)
-    .replaceAll(FILE_PLACEHOLDER, source))
+  const argv = playerArgv(command, source)
   const [binary, ...rest] = argv
   if (binary === undefined) throw new Error('audiolib: `playerCommand` is empty')
   if (signal.aborted) return
@@ -122,4 +167,45 @@ export async function play(source: string, command: readonly string[], signal: A
       else reject(new Error(`audiolib: player "${binary}" exited with code ${code}`))
     }))
   })
+}
+
+/** A prepared track, plus the source only this module knows how to play. */
+interface PreparedSource extends PreparedTrack {
+  readonly source: string
+}
+
+/**
+ * Bind a player command into a {@link Playback}.
+ *
+ * The streaming decision lives here and nowhere else: a streaming command
+ * prepares by doing nothing and plays the URL, a file-only one prepares by
+ * downloading and plays the path. The soundtrack above never learns which.
+ *
+ * @param command - player argv containing `{url}` or `{file}`.
+ * @returns the playback port.
+ */
+export function createPlayback(command: readonly string[]): Playback {
+  const streaming = isStreaming(command)
+  return {
+    // No return-type annotation here: the object literal below needs its
+    // contextual type to come from `Playback` alone, or TypeScript's excess
+    // property check fires against `PreparedTrack` before `satisfies` below
+    // gets a say.
+    async prepare(track: Track, signal: AbortSignal) {
+      if (streaming) {
+        return { source: track.url, dispose: async () => undefined } satisfies PreparedSource
+      }
+      const local = await download(track.url, signal)
+      return { source: local.file, dispose: local.dispose } satisfies PreparedSource
+    },
+    async play(prepared: PreparedTrack, signal: AbortSignal): Promise<void> {
+      // The handle is opaque above this line, so the narrowing has to happen
+      // here — and a handle from somewhere else is a bug worth naming.
+      const source = (prepared as Partial<PreparedSource>).source
+      if (source === undefined) {
+        throw new Error('audiolib: playback received a track it did not prepare')
+      }
+      await play(source, command, signal)
+    },
+  }
 }
