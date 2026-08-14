@@ -73,12 +73,23 @@ export function apply(ctx: Context, config: Config): void {
   const ref = config.apiKeyRef as CredentialRef
 
   /**
+   * Read the credentials service without requiring it: a plain `ctx.credentials`
+   * access THROWS when the service is not in `inject`, and requiring it would
+   * keep the plugin from activating — which fails the whole harness boot — in a
+   * composition that mounts no provider.
+   *
+   * @returns the provider, or `undefined` when this composition has none.
+   */
+  const credentials = (): Context['credentials'] | undefined =>
+    ctx.reflect.get('credentials', false) as Context['credentials'] | undefined
+
+  /**
    * Resolve the key for one call. The credentials provider layers the process
    * environment over its managed store, so a plain `AUDIOLIB_API_KEY=…` still
    * works and a key pasted into the store takes effect on the next track.
    */
   const resolveKey = async (): Promise<string> => {
-    const stored = await ctx.credentials?.resolve(ref)
+    const stored = await credentials()?.resolve(ref)
     const key = stored?.value ?? process.env[config.apiKeyRef] ?? ''
     if (key === '') {
       throw new Error(`audiolib: no key behind "${config.apiKeyRef}" — add it to ~/.dsh/.credentials.yaml or the environment`)
@@ -99,7 +110,7 @@ export function apply(ctx: Context, config: Config): void {
   // One loud line at load when nothing is configured yet, instead of a silent
   // soundtrack whose cause only shows up in a per-track warning.
   void (async () => {
-    const configured = (await ctx.credentials?.describe(ref))?.configured ?? process.env[config.apiKeyRef] !== undefined
+    const configured = (await credentials()?.describe(ref))?.configured ?? process.env[config.apiKeyRef] !== undefined
     if (!configured) {
       ctx.logger.warn('audiolib: no key behind "%s" — the soundtrack stays silent until one is configured', config.apiKeyRef)
     }

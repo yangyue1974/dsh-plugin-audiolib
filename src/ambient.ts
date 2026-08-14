@@ -235,7 +235,13 @@ export class AmbientSoundtrack {
     if (existing !== undefined) void disposeQuietly(existing.work)
     this.#prefetch = {
       library,
-      work: this.#prepare(library).catch(() => undefined),
+      // A swallowed prefetch failure is indistinguishable from silence, and
+      // silence is this plugin's normal state — so say what went wrong.
+      work: this.#prepare(library).catch((error: unknown) => {
+        this.#options.logger.warn('audiolib: could not prepare %s', library)
+        this.#options.logger.warn(error)
+        return undefined
+      }),
     }
   }
 
