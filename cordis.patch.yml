@@ -1,0 +1,8 @@
+# Bundle layer contributed by dsh-plugin-audiolib.
+# A profile's own cordis.patch.yml can override this row by id without touching the package.
+- insert:
+    - id: audiolib
+      name: dsh-plugin-audiolib
+      config:
+        workingLibrary: audio.focus
+        idleLibrary: ''
