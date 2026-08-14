@@ -92,6 +92,12 @@ export class AmbientSoundtrack {
   #playing: { library: string; title: string } | undefined
   /** Aborts only the current track, leaving the loop free to pick the next one. */
   #track: AbortController | undefined
+  /**
+   * Aborts a backoff the loop is currently waiting out. A backoff reaches
+   * thirty seconds and stays there, so anyone asking for silence or for a
+   * different library has to be able to cut it short rather than serve it.
+   */
+  #wake: AbortController | undefined
 
   constructor(options: AmbientOptions) {
     this.#options = options
@@ -157,6 +163,7 @@ export class AmbientSoundtrack {
     // signal that carries that meaning.
     this.#health = { kind: 'ok' }
     this.#attempts = 0
+    this.#wake?.abort()
     const playing = this.#loop !== undefined
     // Fetch the newly chosen library now, so the seam does not stall on it.
     this.#startPrefetch(library)
@@ -174,6 +181,7 @@ export class AmbientSoundtrack {
     this.#stopped = true
     this.#override = undefined
     this.#track?.abort()
+    this.#wake?.abort()
     await this.#loop
   }
 
@@ -234,6 +242,14 @@ export class AmbientSoundtrack {
         await taken.prepared.dispose().catch(() => undefined)
         return
       }
+      // A fetch covers a network call and, on a file-only player, a whole
+      // download. A stop or a library change arriving inside that window has no
+      // track to interrupt, so answering it by playing the track anyway would
+      // make the answer arrive three minutes late.
+      if (this.#currentLibrary() !== library) {
+        await taken.prepared.dispose().catch(() => undefined)
+        continue
+      }
       this.#startPrefetch()
       this.#track = new AbortController()
       const signal = AbortSignal.any([this.#controller.signal, this.#track.signal])
@@ -264,10 +280,13 @@ export class AmbientSoundtrack {
     if (this.#controller.signal.aborted) return false
     const kind = error instanceof AudiolibError ? error.kind : 'transient'
     const message = error instanceof Error ? error.message : String(error)
-    const quota = (error instanceof AudiolibError ? error.quota : undefined) ?? this.#quota
+    // The 402 carries the snapshot that dates the pause, and it is also the
+    // truest one there is: keeping it is what stops `music_status` reporting a
+    // healthy quota beside a quota pause, at the one moment the field matters.
+    if (error instanceof AudiolibError) this.#noteQuota(error.quota)
     this.#attempts += 1
     const wasRetrying = this.#health.kind === 'retrying'
-    const health = healthFromError(kind, message, this.#attempts, quota)
+    const health = healthFromError(kind, message, this.#attempts, this.#quota)
     this.#health = health
     if (health.kind !== 'retrying') {
       this.#options.logger.warn('audiolib: paused — %s', message)
@@ -276,7 +295,16 @@ export class AmbientSoundtrack {
     // One warning for the whole outage. Warning per attempt floods exactly the
     // log a reader would be searching to understand the outage.
     if (!wasRetrying) this.#options.logger.warn('audiolib: request failed, retrying — %s', message)
-    await this.#options.clock.sleep(backoffMs(this.#attempts), this.#controller.signal)
+    const wake = new AbortController()
+    this.#wake = wake
+    try {
+      await this.#options.clock.sleep(
+        backoffMs(this.#attempts), AbortSignal.any([this.#controller.signal, wake.signal]))
+    } finally {
+      this.#wake = undefined
+    }
+    // Woken early still means "go round again": the next pass re-reads the
+    // library, which is what turns a stop into silence and a request into music.
     return !this.#controller.signal.aborted
   }
 

@@ -20,14 +20,39 @@ export async function settle(): Promise<void> {
   }
 }
 
-/** A clock that records what it was asked to wait for and never waits. */
+/** A clock that records what it was asked to wait for and, by default, never waits. */
 export class FakeClock implements Clock {
   /** Every delay requested, in order. */
   readonly slept: number[] = []
+  /** Every delay an abort cut short, in order. */
+  readonly interrupted: number[] = []
+  /** Whether sleeps park until aborted instead of returning at once. */
+  #holding = false
   #now = 1_000_000
 
-  async sleep(ms: number): Promise<void> {
+  /**
+   * Make every later sleep park until its signal aborts. Returning instantly is
+   * what lets a backoff sequence run inside one `settle`, but it also means a
+   * test can never be *inside* a backoff — which is the only place from which
+   * cutting one short is observable.
+   */
+  holdSleeps(): void {
+    this.#holding = true
+  }
+
+  async sleep(ms: number, signal: AbortSignal): Promise<void> {
     this.slept.push(ms)
+    if (signal.aborted) {
+      this.interrupted.push(ms)
+      return
+    }
+    if (!this.#holding) return
+    await new Promise<void>(resolve => {
+      signal.addEventListener('abort', () => {
+        this.interrupted.push(ms)
+        resolve()
+      }, { once: true })
+    })
   }
 
   now(): number {
@@ -51,6 +76,10 @@ export class FakeSource implements TrackSource {
   /** Attached to every track this source returns. */
   quota: Quota | undefined
   readonly #failures: Error[] = []
+  /** Set while a gated fetch waits; calling it lets that fetch finish. */
+  #release: (() => void) | undefined
+  /** Whether the next fetch parks before answering. */
+  #gateNext = false
   #served = 0
 
   /**
@@ -63,8 +92,28 @@ export class FakeSource implements TrackSource {
     for (let i = 0; i < times; i += 1) this.#failures.push(error)
   }
 
+  /**
+   * Make the next fetch park until {@link releaseFetch}, so a test can act
+   * while a request is genuinely in flight rather than only around one.
+   */
+  gateNextFetch(): void {
+    this.#gateNext = true
+  }
+
+  /** Let a gated fetch answer. */
+  releaseFetch(): void {
+    const release = this.#release
+    this.#release = undefined
+    release?.()
+  }
+
   async fetch(library: string): Promise<Track> {
+    // Recorded before the gate, so a test can see the call is outstanding.
     this.requested.push(library)
+    if (this.#gateNext) {
+      this.#gateNext = false
+      await new Promise<void>(resolve => { this.#release = resolve })
+    }
     const failure = this.#failures.shift()
     if (failure !== undefined) throw failure
     this.#served += 1

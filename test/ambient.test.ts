@@ -363,3 +363,71 @@ test('a prefetch that fails and is then discarded still says why', async () => {
   assert.deepEqual(h.playback.played, ['audio.jazz #1'], 'the discard did not disturb the music')
   await h.soundtrack.dispose()
 })
+
+test('stop cuts a pending backoff short instead of waiting it out', async () => {
+  const h = harness()
+  h.clock.holdSleeps()
+  h.source.failNext(transientFailure())
+  h.soundtrack.turnOpened('s1')
+  await settle()
+  assert.deepEqual(h.clock.slept, [1_000], 'the loop is inside the backoff')
+  let returned = false
+  const stopped = h.soundtrack.stop().then(() => { returned = true })
+  await settle()
+  assert.equal(returned, true, 'stop did not wait the backoff out')
+  assert.deepEqual(h.clock.interrupted, [1_000], 'the wait was cut short, not merely outlived')
+  await stopped
+  await h.soundtrack.dispose()
+})
+
+test('music_play cuts a pending backoff short', async () => {
+  const h = harness()
+  h.clock.holdSleeps()
+  h.source.failNext(transientFailure())
+  h.soundtrack.turnOpened('s1')
+  await settle()
+  assert.deepEqual(h.clock.slept, [1_000], 'the loop is inside the backoff')
+  h.soundtrack.request('audio.jazz')
+  await settle()
+  assert.deepEqual(h.clock.interrupted, [1_000], 'someone asking for music is not made to wait')
+  assert.deepEqual(h.playback.played, ['audio.jazz #1'])
+  await h.soundtrack.dispose()
+})
+
+test('a stop during a fetch does not play what the fetch brought back', async () => {
+  const h = harness()
+  h.source.gateNextFetch()
+  h.soundtrack.turnOpened('s1')
+  await settle()
+  assert.deepEqual(h.source.requested, ['audio.focus'], 'the fetch is in flight')
+  assert.equal(h.playback.isPlaying, false, 'nothing is playing yet, so there is no track to abort')
+  let returned = false
+  const stopped = h.soundtrack.stop().then(() => { returned = true })
+  h.source.releaseFetch()
+  await settle()
+  assert.deepEqual(h.playback.played, [], 'silence requested is silence owed')
+  assert.ok(h.playback.disposed.includes('audio.focus #1'), 'the fetched track was released')
+  assert.equal(returned, true, 'stop did not wait out a track nobody asked for')
+  await stopped
+  await h.soundtrack.dispose()
+})
+
+test('a quota failure reports the quota it carried, not the last good one', async () => {
+  const h = harness()
+  h.source.quota = {
+    planName: 'Starter', total: 300, used: 1, remaining: 299,
+    unlimited: false, ratePerMinute: 10, periodEnd: 1_800_000_000,
+  }
+  h.soundtrack.turnOpened('s1')
+  await settle()
+  assert.equal(h.soundtrack.status().quota?.remaining, 299, 'the good snapshot landed')
+  // The next call is the one that hits the wall.
+  h.source.failNext(quotaFailure(h.clock.now() + 3_600))
+  h.soundtrack.request('audio.jazz')
+  h.playback.endTrack()
+  await settle()
+  const status = h.soundtrack.status()
+  assert.equal(status.health.kind, 'paused')
+  assert.equal(status.quota?.remaining, 0, 'the 402 said the account is spent, and that is what status reports')
+  await h.soundtrack.dispose()
+})
