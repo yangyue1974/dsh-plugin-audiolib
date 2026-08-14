@@ -15,8 +15,10 @@ import type { CredentialRef } from '@deepseek-ai/dsh-credentials/types'
 import type { SettingsNamespace } from '@deepseek-ai/dsh-settings'
 import type { ToolDefinition } from '@deepseek-ai/dsh-tools'
 import { AmbientSoundtrack } from './ambient.js'
+import { requestTrack } from './audiolib.js'
+import { systemClock } from './clock.js'
 import { LIBRARIES } from './libraries.js'
-import { defaultPlayerCommand } from './player.js'
+import { createPlayback, defaultPlayerCommand } from './player.js'
 
 export const name = 'audiolib'
 
@@ -120,10 +122,18 @@ export function apply(ctx: Context, config: Config): void {
     return key
   }
 
+  const playerCommand = config.playerCommand.length > 0
+    ? config.playerCommand
+    : defaultPlayerCommand(process.platform)
+  const endpoint = { baseUrl: config.baseUrl, timeoutMs: config.requestTimeoutMs }
   const soundtrack = new AmbientSoundtrack({
-    endpoint: { baseUrl: config.baseUrl, timeoutMs: config.requestTimeoutMs },
-    resolveKey,
-    playerCommand: config.playerCommand.length > 0 ? config.playerCommand : defaultPlayerCommand(process.platform),
+    source: {
+      async fetch(library, signal) {
+        return requestTrack(endpoint, await resolveKey(), library, signal)
+      },
+    },
+    playback: createPlayback(playerCommand),
+    clock: systemClock,
     libraries: () => ({ working: current().workingLibrary, idle: current().idleLibrary }),
     logger: ctx.logger,
   })

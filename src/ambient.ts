@@ -7,8 +7,8 @@
  * feedback; the seam is the only moment where switching carries information.
  */
 
-import { requestTrack, type Endpoint, type Quota, type Track } from './audiolib.js'
-import { download, isStreaming, play, type LocalTrack } from './player.js'
+import type { Quota, Track } from './audiolib.js'
+import type { Clock, Playback, PreparedTrack, TrackSource } from './ports.js'
 
 /** Whether any session currently holds an open turn. */
 export type Activity = 'working' | 'idle'
@@ -31,14 +31,12 @@ export interface AmbientStatus {
 
 /** Everything the soundtrack needs to run. */
 export interface AmbientOptions {
-  readonly endpoint: Endpoint
-  /**
-   * Resolve the API key for one call. Credentials are read per operation, never
-   * cached, so rotating the key reaches the very next track without a restart.
-   */
-  resolveKey(): Promise<string>
-  /** Player argv, already resolved to a platform default when unset. */
-  readonly playerCommand: readonly string[]
+  /** Where tracks come from. */
+  readonly source: TrackSource
+  /** How they reach the speakers. */
+  readonly playback: Playback
+  /** Time, so a retry delay is something a test can inspect. */
+  readonly clock: Clock
   /**
    * The libraries in force right now. A thunk, not two strings: settings can
    * change under a running soundtrack, and the next seam must read the choice
@@ -51,19 +49,16 @@ export interface AmbientOptions {
   readonly logger: AmbientLogger
 }
 
-/**
- * A track ready to play: streamed straight from its URL, or downloaded first
- * when the configured player only reads local files.
- */
-interface Prepared {
+/** A track plus the handle that plays it. */
+interface Taken {
   readonly track: Track
-  readonly local: LocalTrack | undefined
+  readonly prepared: PreparedTrack
 }
 
 /** A prefetch in flight for one specific library. */
 interface Prefetch {
   readonly library: string
-  readonly work: Promise<Prepared | undefined>
+  readonly work: Promise<Taken>
 }
 
 /**
@@ -123,9 +118,8 @@ export class AmbientSoundtrack {
   }
 
   /**
-   * Download one track before anything asks for it, so the first turn opens on
-   * the downbeat. A track is several megabytes: fetching it only once a turn
-   * starts would spend that turn's first ten seconds in silence.
+   * Prepare one track before anything asks for it, so the first turn opens on
+   * the downbeat rather than on whatever the network takes to answer.
    */
   warmUp(): void {
     this.#startPrefetch(this.#options.libraries().working)
@@ -186,23 +180,26 @@ export class AmbientSoundtrack {
     while (!this.#controller.signal.aborted) {
       const library = this.#currentLibrary()
       if (library === '') return
-      let prepared: Prepared | undefined
+      let taken: Taken
       try {
-        prepared = await this.#take(library)
+        taken = await this.#take(library)
       } catch (error) {
         this.#options.logger.warn('audiolib: stopped after a failed request')
         this.#options.logger.warn(error)
         return
       }
-      if (prepared === undefined || this.#controller.signal.aborted) return
+      if (this.#controller.signal.aborted) {
+        await taken.prepared.dispose().catch(() => undefined)
+        return
+      }
       this.#startPrefetch()
       this.#track = new AbortController()
       const signal = AbortSignal.any([this.#controller.signal, this.#track.signal])
-      this.#playing = { library, title: prepared.track.title }
+      this.#playing = { library, title: taken.track.title }
       try {
-        this.#options.logger.info('audiolib: %s — %s (quota left: %s)', library, prepared.track.title,
+        this.#options.logger.info('audiolib: %s — %s (quota left: %s)', library, taken.track.title,
           this.#quota === undefined ? '?' : this.#quota.unlimited ? 'unlimited' : String(this.#quota.remaining))
-        await play(prepared.local?.file ?? prepared.track.url, this.#options.playerCommand, signal)
+        await this.#options.playback.play(taken.prepared, signal)
       } catch (error) {
         this.#options.logger.warn('audiolib: playback stopped')
         this.#options.logger.warn(error)
@@ -210,26 +207,22 @@ export class AmbientSoundtrack {
       } finally {
         this.#track = undefined
         this.#playing = undefined
-        await prepared.local?.dispose()
+        await taken.prepared.dispose().catch(() => undefined)
       }
     }
   }
 
   /** Take the prefetched track when it matches `library`, else fetch a fresh one. */
-  async #take(library: string): Promise<Prepared | undefined> {
+  async #take(library: string): Promise<Taken> {
     const prefetch = this.#prefetch
     this.#prefetch = undefined
-    if (prefetch?.library === library) {
-      const prepared = await prefetch.work
-      if (prepared !== undefined) return prepared
-    } else if (prefetch !== undefined) {
-      await disposeQuietly(prefetch.work)
-    }
+    if (prefetch?.library === library) return prefetch.work
+    if (prefetch !== undefined) void disposeQuietly(prefetch.work)
     return this.#prepare(library)
   }
 
   /**
-   * Fetch and download a track ahead of the seam that will play it. Calls are
+   * Fetch and prepare a track ahead of the seam that will play it. Calls are
    * cheap, so a prefetch discarded by a state change costs nothing worth saving.
    *
    * @param library - the library to prepare; defaults to what a seam would pick now.
@@ -239,28 +232,19 @@ export class AmbientSoundtrack {
     const existing = this.#prefetch
     if (existing?.library === library) return
     if (existing !== undefined) void disposeQuietly(existing.work)
-    this.#prefetch = {
-      library,
-      // A swallowed prefetch failure is indistinguishable from silence, and
-      // silence is this plugin's normal state — so say what went wrong.
-      work: this.#prepare(library).catch((error: unknown) => {
-        this.#options.logger.warn('audiolib: could not prepare %s', library)
-        this.#options.logger.warn(error)
-        return undefined
-      }),
-    }
+    const work = this.#prepare(library)
+    // A prefetch nobody ends up awaiting must not crash the process; the taker
+    // still sees the rejection through its own reference to the same promise.
+    void work.catch(() => undefined)
+    this.#prefetch = { library, work }
   }
 
-  async #prepare(library: string): Promise<Prepared | undefined> {
+  async #prepare(library: string): Promise<Taken> {
     const signal = this.#controller.signal
-    const apiKey = await this.#options.resolveKey()
-    const track = await requestTrack(this.#options.endpoint, apiKey, library, signal)
+    const track = await this.#options.source.fetch(library, signal)
     if (track.quota !== undefined) this.#quota = track.quota
-    if (signal.aborted) return undefined
-    // A streaming player takes the URL and buffers as it plays; only a
-    // file-only player makes the plugin pay for the whole track up front.
-    if (isStreaming(this.#options.playerCommand)) return { track, local: undefined }
-    return { track, local: await download(track.url, signal) }
+    const prepared = await this.#options.playback.prepare(track, signal)
+    return { track, prepared }
   }
 
   async #discardPrefetch(): Promise<void> {
@@ -275,7 +259,7 @@ export class AmbientSoundtrack {
  *
  * @param work - the prefetch whose result is no longer wanted.
  */
-async function disposeQuietly(work: Promise<Prepared | undefined>): Promise<void> {
-  const prepared = await work.catch(() => undefined)
-  await prepared?.local?.dispose().catch(() => undefined)
+async function disposeQuietly(work: Promise<Taken>): Promise<void> {
+  const taken = await work.catch(() => undefined)
+  await taken?.prepared.dispose().catch(() => undefined)
 }
