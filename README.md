@@ -1,8 +1,13 @@
+<p align="center">
+  <img src="https://raw.githubusercontent.com/yangyue1974/dsh-plugin-audiolib/main/.github/assets/banner.jpg" alt="dsh-plugin-audiolib — an ambient soundtrack for DeepSeek Harness, powered by AudioLib.ai" width="100%">
+</p>
+
 # dsh-plugin-audiolib
 
 English | [中文](README.zh.md)
 
 [![npm](https://img.shields.io/npm/v/dsh-plugin-audiolib.svg)](https://www.npmjs.com/package/dsh-plugin-audiolib)
+[![ci](https://github.com/yangyue1974/dsh-plugin-audiolib/actions/workflows/ci.yml/badge.svg)](https://github.com/yangyue1974/dsh-plugin-audiolib/actions/workflows/ci.yml)
 [![license](https://img.shields.io/npm/l/dsh-plugin-audiolib.svg)](LICENSE)
 
 
