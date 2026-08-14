@@ -52,21 +52,22 @@ brew install mpv        # 或：apt install mpv
 
 | 字段 | 默认值 | 含义 |
 |---|---|---|
-| `apiKey` | `''` | AudioLib 密钥；为空时回落到 `AUDIOLIB_API_KEY` |
+| `apiKeyRef` | `AUDIOLIB_API_KEY` | 存放密钥的凭据名——只是引用，密钥本身不写在这里 |
 | `baseUrl` | `https://api.audiolib.ai/v1/audio` | 音频接口地址 |
 | `ambient` | `true` | 是否让会话事件驱动音轨 |
 | `workingLibrary` | `audio.focus` | turn 打开期间播放的曲库；`''` 表示静音 |
 | `idleLibrary` | `''` | 所有 turn 关闭后播放的曲库；`''` 表示静音 |
-| `exposeTools` | `true` | 是否把 `music_play` / `music_stop` 给模型 |
+| `exposeTools` | `true` | 是否把 `music_play` / `music_stop` / `music_status` 给模型 |
 | `playerCommand` | `[]` | 播放器 argv；留空自动选。`{url}` 声明流式播放器，`{file}` 声明只读本地文件的 |
 | `requestTimeoutMs` | `15000` | AudioLib 请求超时 |
 
-已知曲库：`audio.focus`、`audio.ambient`、`audio.cinematic`、`audio.jazz`、`audio.sleep`、`audio.electronic`、`audio.default`。
+曲库共 25 个——`audio.focus`、`audio.ambient`、`audio.cinematic`、`audio.jazz`、`audio.classical`、`audio.sleep`、`audio.meditation`、`audio.workout`、`audio.electronic` 等。API 认的 id 都能用；完整列表在 `src/libraries.ts`，也写进了 `music_play` 的工具描述。
 
 ## 工具
 
 - `music_play(library)` — 让模型给自己的工作配乐。在下一个接缝处生效；当前没有播放时立即开始。
 - `music_stop()` — 立刻停止，并保持静音直到再次调用 `music_play`。
+- `music_status()` — 报告正在播放的曲目，以及 AudioLib 的套餐、剩余调用次数和速率上限。配额搭在每次取曲的响应里返回，所以这个查询不花调用额度。
 
 两者都是 `ctx.tools` 上的普通注册，因此在 Code Mode 里也能直接 `await tools.music_play({ library })`。
 

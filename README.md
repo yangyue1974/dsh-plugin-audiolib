@@ -54,21 +54,22 @@ Override the row in your profile's `cordis.patch.yml`:
 
 | Field | Default | Meaning |
 |---|---|---|
-| `apiKey` | `''` | AudioLib key; falls back to `AUDIOLIB_API_KEY` |
+| `apiKeyRef` | `AUDIOLIB_API_KEY` | Name of the credential holding the key — a reference, never the key itself |
 | `baseUrl` | `https://api.audiolib.ai/v1/audio` | Audio endpoint |
 | `ambient` | `true` | Let session events drive the soundtrack |
 | `workingLibrary` | `audio.focus` | Plays while a turn is open; `''` for silence |
 | `idleLibrary` | `''` | Plays once every turn has closed; `''` for silence |
-| `exposeTools` | `true` | Give the model `music_play` / `music_stop` |
+| `exposeTools` | `true` | Give the model `music_play` / `music_stop` / `music_status` |
 | `playerCommand` | `[]` | Player argv; empty auto-selects. `{url}` declares a streaming player, `{file}` a file-only one |
 | `requestTimeoutMs` | `15000` | AudioLib request deadline |
 
-Known libraries include `audio.focus`, `audio.ambient`, `audio.cinematic`, `audio.jazz`, `audio.sleep`, `audio.electronic`, `audio.default`.
+The catalog has 25 libraries — `audio.focus`, `audio.ambient`, `audio.cinematic`, `audio.jazz`, `audio.classical`, `audio.sleep`, `audio.meditation`, `audio.workout`, `audio.electronic` and more. Any id the API accepts works; the full list ships in `src/libraries.ts` and in `music_play`'s description.
 
 ## Tools
 
 - `music_play(library)` — the model scores its own work. Takes effect at the next seam; starts immediately when nothing is playing.
 - `music_stop()` — stops now and stays silent until `music_play` is called again.
+- `music_status()` — reports the playing track plus the AudioLib plan, remaining calls, and rate limit. Every audio response carries a quota snapshot, so this costs no API call.
 
 Both are ordinary registrations on `ctx.tools`, so they are available in Code Mode as `await tools.music_play({ library })` too.
 
