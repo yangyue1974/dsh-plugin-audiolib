@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "outDir": ".test-build",
+    "rootDir": ".",
+    "declaration": false,
+    "noEmit": false
+  },
+  "//": "Tests compile alongside src into a throwaway tree; node --test runs the emitted .js.",
+  "include": ["src", "test"],
+  "exclude": ["src/client"]
+}

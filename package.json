@@ -48,7 +48,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.json && tsdown",
     "prepare": "tsc -p tsconfig.json && tsdown",
-    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.client.json"
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.client.json",
+    "test": "tsc -p tsconfig.test.json && node --test \".test-build/test/**/*.test.js\""
   },
   "dependencies": {
     "@deepseek-ai/schemastery": "^3.18.1"

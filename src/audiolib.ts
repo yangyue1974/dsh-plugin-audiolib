@@ -26,6 +26,32 @@ export interface Quota {
   readonly periodEnd: number
 }
 
+/**
+ * How a failed AudioLib call should be treated. The distinction is the whole
+ * point: a `transient` failure is worth retrying forever and an `auth` one is
+ * worth retrying never, and only the code holding the HTTP status can tell.
+ */
+export type AudiolibErrorKind = 'transient' | 'auth' | 'quota' | 'config'
+
+/** A failed AudioLib call, classified for the caller's retry policy. */
+export class AudiolibError extends Error {
+  readonly kind: AudiolibErrorKind
+  /** Quota reported alongside the failure; absent when the response carried none. */
+  readonly quota: Quota | undefined
+
+  /**
+   * @param kind - the retry classification.
+   * @param message - what to show a human.
+   * @param quota - the quota snapshot in the failing response, when it had one.
+   */
+  constructor(kind: AudiolibErrorKind, message: string, quota?: Quota) {
+    super(message)
+    this.name = 'AudiolibError'
+    this.kind = kind
+    this.quota = quota
+  }
+}
+
 /** One track AudioLib selected for a requested library. */
 export interface Track {
   /** Track title, used for logging only. */
@@ -44,6 +70,12 @@ export interface Endpoint {
   readonly baseUrl: string
   /** Per-request deadline in milliseconds. */
   readonly timeoutMs: number
+  /**
+   * Transport, defaulting to the global `fetch`. Named here so a test can
+   * answer the request without a socket, and so a deployment behind a proxy
+   * can supply its own.
+   */
+  readonly fetch?: typeof globalThis.fetch
 }
 
 /** The JSON envelope returned by the audio endpoint; every field is untrusted. */
@@ -84,6 +116,27 @@ function readQuota(quota: Record<string, unknown> | undefined): Quota | undefine
 }
 
 /**
+ * Classify a failed response.
+ *
+ * A 429 is ambiguous on its own: it covers the per-minute rate limit, which
+ * clears in seconds, and an exhausted period, which does not. The quota in the
+ * same response settles it, and a response carrying none gets the recoverable
+ * reading — a retry costs a request, a wrong pause costs the whole feature.
+ *
+ * @param status - the HTTP status.
+ * @param quota - the quota projected out of the same response.
+ * @returns the retry classification.
+ */
+function classify(status: number, quota: Quota | undefined): AudiolibErrorKind {
+  if (status === 401 || status === 403) return 'auth'
+  if (status === 402) return 'quota'
+  const exhausted = quota !== undefined && !quota.unlimited && quota.remaining <= 0
+  if (exhausted) return 'quota'
+  if (status === 429 || status >= 500) return 'transient'
+  return 'config'
+}
+
+/**
  * Request one track from `library`.
  *
  * @param endpoint - endpoint URL and per-request deadline.
@@ -94,28 +147,42 @@ function readQuota(quota: Record<string, unknown> | undefined): Quota | undefine
  * @throws when the request fails or the response carries no usable URL.
  */
 export async function requestTrack(endpoint: Endpoint, apiKey: string, library: string, signal: AbortSignal): Promise<Track> {
-  const response = await fetch(endpoint.baseUrl, {
-    method: 'POST',
-    headers: {
-      authorization: `Bearer ${apiKey}`,
-      'content-type': 'application/json',
-    },
-    body: JSON.stringify({ library }),
-    signal: AbortSignal.any([signal, AbortSignal.timeout(endpoint.timeoutMs)]),
-  })
+  const transport = endpoint.fetch ?? globalThis.fetch
+  let response: Response
+  try {
+    response = await transport(endpoint.baseUrl, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${apiKey}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ library }),
+      signal: AbortSignal.any([signal, AbortSignal.timeout(endpoint.timeoutMs)]),
+    })
+  } catch (error) {
+    // The caller's own cancellation is not a failure to classify; the deadline
+    // firing is, and both arrive here as an abort.
+    if (signal.aborted) throw error
+    throw new AudiolibError('transient', `audiolib: "${library}" request failed (${String(error)})`)
+  }
   const body = await response.json().catch(() => undefined) as AudiolibBody | undefined
+  const quota = readQuota(body?.data?.quota)
   const message = typeof body?.msg === 'string' ? `, ${body.msg}` : ''
   if (!response.ok || body?.code !== 0) {
-    throw new Error(`audiolib: "${library}" request failed (HTTP ${response.status}${message})`)
+    throw new AudiolibError(
+      classify(response.status, quota),
+      `audiolib: "${library}" request failed (HTTP ${response.status}${message})`,
+      quota,
+    )
   }
   const data = body.data
   if (typeof data?.url !== 'string' || data.url === '') {
-    throw new Error(`audiolib: "${library}" response carried no track URL`)
+    throw new AudiolibError('config', `audiolib: "${library}" response carried no track URL`, quota)
   }
   return {
     title: typeof data.title === 'string' ? data.title : library,
     url: data.url,
     durationSec: typeof data.duration_sec === 'number' ? data.duration_sec : 0,
-    quota: readQuota(data.quota),
+    quota,
   }
 }
