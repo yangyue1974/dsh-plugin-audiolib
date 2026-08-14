@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.2.0 — 2026-08-14
+
+- A failed request no longer silences the soundtrack. Transient failures —
+  network, 5xx, timeout, and the per-minute rate limit — back off 1s, 2s, 4s,
+  8s, 16s, then 30s and keep going, so the music resumes by itself after an
+  outage of any length. Failures no retry can fix pause instead, each with a
+  reason: a bad key, an exhausted period, a missing player, a response the
+  client cannot read.
+- A quota pause is dated from the `period_end` the API reports, so it lifts by
+  itself when the period rolls over. Every other pause waits for `music_play`
+  or a restart, because nothing else about it can change on its own.
+- `music_status` reports `health` and `healthReason`, which is where "why is
+  there no music" gets answered — the browser card still cannot show it.
+- One warning when fewer than 10% of the period's calls are left, so the wall
+  arrives announced.
+- **Changed:** the library `music_play` chooses now clears when the last open
+  turn closes, returning to `idleLibrary`. It used to persist forever, which
+  disabled the working/idle mapping for the rest of the session and contradicted
+  what the README described.
+- Fixed: `mpv` and `ffplay` are now detected on Windows. Detection probed with
+  `which`, which does not exist there, so streaming playback was silently lost.
+- The soundtrack runs on injected ports and the package has a test suite —
+  `npm test`, no new dependency — covering the seam, prefetch discard,
+  concurrent turns, the backoff sequence, every failure classification, and the
+  dispose race. CI runs it on Node 22 and 24.
+- Fixed: the install instructions in both READMEs told the reader to run
+  `dsh plugin --profile web add dsh-plugin-audiolib`. That fails for anyone who
+  installed DSH with `npx @deepseek-ai/dsh web` — `dsh` is never on `PATH` that
+  way, and DSH's plugin installer needs pnpm, which is not installed either.
+  Both READMEs now route through `npx` and `corepack enable pnpm`.
+
 ## 0.1.0 — 2026-08-14
 
 First release.

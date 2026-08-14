@@ -14,11 +14,16 @@ agent 需要的状态信号本来就在会话事件流里：一个 turn 打开�
 
 ## 安装
 
+如果你是用 `npx @deepseek-ai/dsh web` 装的 DSH——不装全局包，CLI 就活在 profile 里——那 `dsh` 根本不在 `PATH` 上，直接敲 `dsh` 只会得到 command not found。改用 `npx` 调用它，并且先启用 pnpm：DSH 用 pnpm 管理 profile 插件，没装就直接拒绝。
+
 ```sh
-dsh plugin --profile web add dsh-plugin-audiolib
+corepack enable pnpm
+npx @deepseek-ai/dsh plugin --profile web add dsh-plugin-audiolib
 ```
 
-重启后打开 **设置 → 插件 → 插件配置**，在 **AudioLib 环境音轨** 卡片里粘贴密钥，保存即可——密钥存进 DSH 的凭据库（`~/.dsh/.credentials.yaml`，权限 600），不进任何配置文件，也不用重启。
+corepack 随 Node 自带，这一步不会引入任何第三方全局安装，`corepack disable pnpm` 也能随时撤销。要是你的 `PATH` 上本来就有 `dsh`，直接 `dsh plugin --profile web add dsh-plugin-audiolib` 效果一样。
+
+重启——`npx @deepseek-ai/dsh web`——之后打开 **设置 → 插件 → 插件配置**，在 **AudioLib 环境音轨** 卡片里粘贴密钥，保存即可——密钥存进 DSH 的凭据库（`~/.dsh/.credentials.yaml`，权限 600），不进任何配置文件，也不用重启。
 
 密钥在 [audiolib.ai](https://audiolib.ai) 获取，免费额度每月 300 次。
 
@@ -70,6 +75,10 @@ brew install mpv        # 或：apt install mpv
 - `music_status()` — 报告正在播放的曲目，以及 AudioLib 的套餐、剩余调用次数和速率上限。配额搭在每次取曲的响应里返回，所以这个查询不花调用额度。
 
 两者都是 `ctx.tools` 上的普通注册，因此在 Code Mode 里也能直接 `await tools.music_play({ library })`。
+
+`music_play` 选的曲库只活到这段工作结束：最后一个 turn 关闭时，音轨回到 `idleLibrary`。明确选的曲库，是为它配的那段工作而选的。
+
+请求失败时，瞬时原因——网络、5xx、超时、速率限制——会退避重试且不设上限，音乐自己接上。密钥错误、额度耗尽、播放器缺失、响应读不了则转为暂停；`music_status` 会说是哪一种，其中额度暂停在周期翻转后自行解除。
 
 ## 实现方式
 

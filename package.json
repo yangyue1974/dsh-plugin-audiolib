@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-audiolib",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Ambient soundtrack for DeepSeek Harness, driven by agent state and powered by AudioLib.ai.",
   "keywords": [
     "dsh",

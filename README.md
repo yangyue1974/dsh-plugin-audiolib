@@ -14,11 +14,16 @@ The agent already publishes everything needed as session events: a turn opens, w
 
 ## Install
 
+If you installed DSH with `npx @deepseek-ai/dsh web` — no global install, the CLI lives inside the profile — then plain `dsh` is not on `PATH`; the shell answers `command not found`. Reach it through `npx` instead, and enable pnpm first: DSH manages profile plugins with pnpm and refuses without it.
+
 ```sh
-dsh plugin --profile web add dsh-plugin-audiolib
+corepack enable pnpm
+npx @deepseek-ai/dsh plugin --profile web add dsh-plugin-audiolib
 ```
 
-After restarting, open **Settings → Plugins → Plugin configuration** and paste your key into the **AudioLib soundtrack** card. It goes to the DSH credential store (`~/.dsh/.credentials.yaml`, mode 600), never into a config file, and takes effect on the next track without a restart.
+`corepack` ships with Node, so this adds no third-party global install, and `corepack disable pnpm` reverses it. Already have `dsh` on `PATH` some other way? `dsh plugin --profile web add dsh-plugin-audiolib` works the same.
+
+Restart — `npx @deepseek-ai/dsh web` — then open **Settings → Plugins → Plugin configuration** and paste your key into the **AudioLib soundtrack** card. It goes to the DSH credential store (`~/.dsh/.credentials.yaml`, mode 600), never into a config file, and takes effect on the next track without a restart.
 
 Get a key at [audiolib.ai](https://audiolib.ai) — the free tier is 300 requests/month.
 
@@ -72,6 +77,10 @@ The catalog has 25 libraries — `audio.focus`, `audio.ambient`, `audio.cinemati
 - `music_status()` — reports the playing track plus the AudioLib plan, remaining calls, and rate limit. Every audio response carries a quota snapshot, so this costs no API call.
 
 Both are ordinary registrations on `ctx.tools`, so they are available in Code Mode as `await tools.music_play({ library })` too.
+
+`music_play`'s choice lasts as long as the work does: when the last open turn closes, the soundtrack returns to `idleLibrary`. An explicitly chosen library scores the stretch of work it was chosen for.
+
+When a request fails, transient causes — network, 5xx, timeout, rate limit — back off and retry indefinitely, so the music resumes on its own. A bad key, an exhausted period, a missing player, or an unreadable response pauses instead; `music_status` reports which, and a quota pause lifts by itself when the period rolls over.
 
 ## How it works
 
